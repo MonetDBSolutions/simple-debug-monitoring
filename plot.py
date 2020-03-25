@@ -5,6 +5,7 @@ import matplotlib
 import collections
 import time
 import os
+import sys
 
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
@@ -34,10 +35,12 @@ size_total_db_directory_scatter_plot, = ax.plot([], [], 'b-o', ls="", label='Siz
 RSS_plot, = ax.plot([], [], 'r-o', ls="", label='RSS monetdb (in pages of {page_size} bytes)'.format(page_size=PAGE_SIZE))
 VM_plot, = ax.plot([], [], 'g-o', ls="", label='VM monetdb (in pages of {page_size} bytes)'.format(page_size=PAGE_SIZE))
 
+
+
 # bash command that gives 
 bashCommand = """
-echo $(du -s ../clone_monetdb/devdb | cut -f1) $(cat /proc/$(pgrep mserver5)/statm | cut -d ' ' -f2) $(cat /proc/$(pgrep mserver5)/statm | cut -d ' ' -f1);
-"""
+echo $(du -s {db_path} | cut -f1) $(cat /proc/$(pgrep mserver5)/statm | cut -d ' ' -f2) $(cat /proc/$(pgrep mserver5)/statm | cut -d ' ' -f1);
+""".format(db_path=sys.argv[1])
 
 devnull = open(os.devnull, 'w')
 
