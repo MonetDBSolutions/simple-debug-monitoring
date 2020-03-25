@@ -4,7 +4,7 @@ import PyQt5
 import matplotlib
 import collections
 import time
-
+import os
 
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
@@ -29,21 +29,28 @@ ax.grid()
 ax.xaxis_date()
 #ax.xaxis.set_major_formatter(myFmt)
 
+# define a plot for each metric
 size_total_db_directory_scatter_plot, = ax.plot([], [], 'b-o', ls="", label='Size of db directory (in bytes)')
 RSS_plot, = ax.plot([], [], 'r-o', ls="", label='RSS monetdb (in pages of {page_size} bytes)'.format(page_size=PAGE_SIZE))
 VM_plot, = ax.plot([], [], 'g-o', ls="", label='VM monetdb (in pages of {page_size} bytes)'.format(page_size=PAGE_SIZE))
-#size of the y axis is set here
-#ax.set_ylim(0,256)
+
+# bash command that gives 
+bashCommand = """
+echo $(du -s ../clone_monetdb/devdb | cut -f1) $(cat /proc/$(pgrep mserver5)/statm | cut -d ' ' -f2) $(cat /proc/$(pgrep mserver5)/statm | cut -d ' ' -f1);
+"""
+
+devnull = open(os.devnull, 'w')
+
+def get_metrics():
+    import subprocess
+    shell = '/bin/bash'
+    result = subprocess.run(bashCommand, shell=True, check=True, executable=shell, stdout=subprocess.PIPE, stderr=devnull, encoding='ascii')
+
+    return result.stdout if result.returncode == 0 else None
 
 
-def init():
-    #size of the y axis is set here
-    #ax.set_xlim(0, data_amount)
-    #ax.set_ylim(3140000,3160000)
-    return size_total_db_directory_scatter_plot,
 import random
 def update(data):
-    print(data)
     datalist.append(data[0])
     disksize.append(data[1])
     RSSsize.append(data[2])
@@ -54,7 +61,6 @@ def update(data):
     ax.relim()
     ax.autoscale_view(True,True,True)
 
-datapipe = open('pipe.dat','r')
 def data_gen():
     while True:
         """
@@ -65,11 +71,13 @@ def data_gen():
         and is seperated with a newline character,
         which is why we use respectively eval and rstrip.
         """
-        raw_record=datapipe.readline()
+        
+        raw_record=get_metrics()
         if raw_record:
-            fields = raw_record.rsplit()
-            yield (datetime.strptime(fields[0], '%Y-%m-%dT%H:%M:%S'), int(fields[1]), int(fields[2]), int(fields[3]))
-
-ani = animation.FuncAnimation(fig,update,init_func=init, interval=500, frames=data_gen, repeat=True, blit=False)
+            time = datetime.now()
+            print(time, raw_record)
+            fields = raw_record.split()
+            yield (time, int(fields[0]), int(fields[1]), int(fields[2]))
+ani = animation.FuncAnimation(fig,update, interval=500, frames=data_gen, repeat=True, blit=False)
 plt.legend()
 plt.show()
