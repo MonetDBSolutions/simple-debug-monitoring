@@ -15,14 +15,22 @@ matplotlib.use('Qt5Agg')
 
 #amount of data to be displayed at once, this is the size of the x axis
 #increasing this amount also makes plotting slightly slower
-data_amount = 1000
+data_amount = 5000
 PAGE_SIZE=4096
 
-#set the size of the deque object
+"""
+#set the size of the deque objects
 datalist = collections.deque([],data_amount)
 disksize = collections.deque([],data_amount)
 RSSsize = collections.deque([],data_amount)
 VMsize = collections.deque([],data_amount)
+"""
+
+#set the size of the list objects
+datalist = list()
+disksize = list()
+RSSsize = list()
+VMsize = list()
 
 #configure the graph itself
 fig, ax = plt.subplots()
