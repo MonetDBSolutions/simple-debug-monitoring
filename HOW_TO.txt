@@ -1,0 +1,4 @@
+to execute plot_allocs.py
+
+just execute
+    plot_allocs.py <path to mdbtrace.log>
