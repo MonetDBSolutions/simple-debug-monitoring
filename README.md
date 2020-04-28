@@ -6,7 +6,7 @@ Make sure you have installed matplotlib and all of its dependencies.
 Just run 
 
 ```bash
-./plot.py <db_path>
+./plot.py <db_path> <mserver5-pid>
 ```
 
 It should pop up a matplotlib display with three graphs: 
