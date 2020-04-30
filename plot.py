@@ -45,7 +45,7 @@ VM_plot, = ax.plot([], [], 'g-o', ls="", label='VM monetdb (in pages of {page_si
 
 # bash command that gives 
 bashCommand = """
-echo $(du -s {db_path} | cut -f1) $(cat /proc/{pid}/statm | cut -d ' ' -f2) $(cat /proc/{pid}/statm | cut -d ' ' -f1);
+echo $(du -bs {db_path} | cut -f1) $(cat /proc/{pid}/statm | cut -d ' ' -f2) $(cat /proc/{pid}/statm | cut -d ' ' -f1);
 """.format(db_path=sys.argv[1], pid=sys.argv[2])
 
 devnull = open(os.devnull, 'w')
