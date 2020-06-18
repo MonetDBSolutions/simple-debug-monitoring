@@ -1,6 +1,0 @@
-TODO's
--   Still have to write a serializer for calloc
--   monetdb code misses trace for GDKremap
--   read and partially truncate live trace file to not explode the disk
--   write parsed allocation data to pickle files
--   have separate process reading live pickle files and updating plots accordingly
