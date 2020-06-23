@@ -5,6 +5,9 @@ import sys, getopt
 import time
 from datetime import datetime
 
+assert sys.version_info >= (3, 6)
+
+
 # global values
 USAGE = """
 Monitors resource usage of one running MonetDB database:
@@ -156,9 +159,10 @@ def exit_on_error(err):
 def main(argv):
     logfile = ""
     dbname = None
+    dbpath = None
 
     try:
-        opts, args = getopt.getopt(argv, "", ["help", "dbname=", "logbase=", "log-interval=", "dbcheck-interval=", "mmap-increase=", "fd-increase="])
+        opts, args = getopt.getopt(argv, "", ["help", "dbname=", "logbase=", "log-interval=", "dbcheck-interval=", "mmap-increase=", "fd-increase=", "dbpath="])
     except getopt.GetoptError as err:
         exit_on_error(str(err))
     for opt, arg in opts:
@@ -167,6 +171,8 @@ def main(argv):
             sys.exit(0)
         elif opt == "--dbname":
             dbname = arg
+        elif opt == "--dbpath":
+            dbpath = arg
         elif opt == "--logbase":
             logfile = arg
         elif opt == "--log-interval":
@@ -181,8 +187,8 @@ def main(argv):
         elif opt == "--fd-increase":
             global FD_INCREASE
             FD_INCREASE = int(arg)
-
-    dbpath = get_db_info(dbname)
+    if not(dbpath):
+        dbpath = get_db_info(dbname)
     dbname = os.path.basename(dbpath)
     if os.path.isdir(logfile):
         os.path.join(logfile, dbname+".log")
