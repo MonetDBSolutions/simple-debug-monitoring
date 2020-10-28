@@ -37,7 +37,7 @@ def mynow():
     return datetime.now().astimezone().replace(microsecond=0).isoformat()
 
 def get_db_info(dbname):
-    cmd = "ps auxwww | grep mserver5 | grep dbpath"
+    cmd = "ps auxwww | grep [m]server5 | grep [d]bpath"
     if dbname:
         cmd = cmd + " | grep " + dbname
 
@@ -57,12 +57,20 @@ def get_db_info(dbname):
 
 def do_log(cmd, log, tee = True):
     ROUND = 2
+    #print("[{now}] DEBUG!do_log(): execute command {cmd}".format(now=mynow(), cmd=cmd))
     res = subprocess.run(cmd, shell=True, check=True, executable=SHELL, stdout=subprocess.PIPE, stderr=DEVNULL, encoding='ascii')
+    #print("[{now}] DEBUG!do_log(): res {res}".format(now=mynow(), res=res.stdout))
     if res.returncode == 0:
         if "statm" in cmd:
             # convert the disk, mem and vm sizes to GB
             vals= res.stdout.split()
-            logres = "{now} {dbsz} {rss} {vmsz} {maps} {fds}".format(now=vals[0], dbsz=round(int(vals[1])/GB_SIZE,ROUND), rss=round(int(vals[2])*PAGE_SIZE/GB_SIZE,ROUND), vmsz=round(int(vals[3])*PAGE_SIZE/GB_SIZE,ROUND), maps=vals[4], fds=vals[5])
+            logres = "{now} {dbsz} {rss} {vmsz} {maps} {fds}".format(
+                    now=vals[0], 
+                    dbsz=round(int(vals[1])/GB_SIZE,ROUND), 
+                    rss=round(int(vals[2])*PAGE_SIZE/GB_SIZE,ROUND), 
+                    vmsz=round(int(vals[3])*PAGE_SIZE/GB_SIZE,ROUND), 
+                    maps=vals[4], 
+                    fds=vals[5])
         else:
             logres = res.stdout
 
@@ -76,9 +84,10 @@ def do_log(cmd, log, tee = True):
 
 def do_db_check(dbname, logfile):
     with open(logfile+".dbchk", 'a') as dbchklog:
+        # FIXME: use only one query on sys.storage()
         # Get the list of all tables not in a system scheme
         # result is in the format: <schema>,<table>\n
-        cmd = "mclient -fcsv -s 'select s.name, t.name from schemas s, tables t where t.system = false and s.id = t.schema_id'"
+        cmd = "mclient -d {dbname} -fcsv -s 'select s.name, t.name from schemas s, tables t where t.system = false and s.id = t.schema_id order by s.name, t.name'".format(dbname=dbname)
         res = subprocess.run(cmd, shell=True, check=True, executable=SHELL, stdout=subprocess.PIPE, stderr=DEVNULL, encoding='ascii')
         if not res.returncode == 0:
             msg = "[{now}] ERROR!Failed to execute: {cmd}".format(now=mynow(), cmd=cmd)
@@ -92,7 +101,7 @@ def do_db_check(dbname, logfile):
             if not s:
                 continue
             s = s.replace(",", ".")
-            cmd2 = "mclient -fcsv -s 'select count(*) from {tbl}'".format(tbl=s)
+            cmd2 = "mclient -d {dbname} -fcsv -s 'select count(*) from {tbl}'".format(dbname=dbname, tbl=s)
             res2 = subprocess.run(cmd2, shell=True, check=True, executable=SHELL, stdout=subprocess.PIPE, stderr=DEVNULL, encoding='ascii')
             if res2.returncode == 0:
                 msg = "[{now}] {cmd} ==> {cnt}".format(now=mynow(), cmd=cmd2, cnt=res2.stdout)
@@ -102,6 +111,8 @@ def do_db_check(dbname, logfile):
 
 
 def monitor(dbpath, logfile):
+    # FIXME: get the correct mserver5 process, in case there are more than one
+
     # bash command that gives: date in sec in ISO 8601 format; disksize in bytes; RSS in #pages; VM in #pages; #mmapped files; #fd
     statsCommand = """
     echo  $(date -Iseconds) $(du -bs {db_path} | cut -f1) $(cat /proc/$(pgrep mserver5)/statm | cut -d ' ' -f2) $(cat /proc/$(pgrep mserver5)/statm | cut -d ' ' -f1) $(cat /proc/$(pgrep mserver5)/maps | wc -l) $(ls -al  /proc/$(pgrep mserver5)/fd | wc -l) ;
