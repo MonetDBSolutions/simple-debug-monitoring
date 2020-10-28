@@ -17,7 +17,7 @@ usage: ./monitor.py [options]
 --dbname           Name of the database to monitor
 --logbase          Extra base filename or path for the log file "<dbname>.log"
 --log-interval     Log interval in seconds, default 5
---dbcheck-interval Interval in seconds to check database teables, default 1800
+--dbcheck-interval Interval in seconds to check database tables, default 1800
 --mmap-increase    How often to log the memory mapped files, default per 5000 increases
 --fd-increase      How often to log the file descripters, default per 100 increases
 """.strip()
