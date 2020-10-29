@@ -1,0 +1,1 @@
+select table, round(sum(distinct "count")/1000000, 0) as "cntM", sum(columnsize)/1024.0/1024/1024 as "colszGB",  (sum(columnsize)+sum(heapsize)+sum(hashes))/1024.0/1024/1024 as "tblszGB" from sys.storage() where table like 'events_partition_%'  group by rollup(table);
