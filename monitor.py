@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 
-import os, subprocess
-import sys, getopt
-import time
+import argparse
 from datetime import datetime
+import getopt
+import os
+import sys
+import subprocess
+import time
 
 assert sys.version_info >= (3, 6)
-
 
 # global values
 USAGE = """
@@ -17,17 +19,19 @@ Monitors resource usage of one running MonetDB database:
 usage: ./monitor.py [options]
 
 --help             Print this help screen
+--dbcheck-interval Interval in seconds to check database tables, default 1800
 --dbname           Name of the database to monitor
+--dbpath           Path of the database to monitor
+--fd-increase      How often to log the file descripters, default per 100
+                   increases
 --logbase          Extra base filename or path for the log file "<dbname>.log"
 --log-interval     Log interval in seconds, default 5
---dbcheck-interval Interval in seconds to check database tables, default 1800
---mmap-increase    How often to log the memory mapped files, default per 5000 increases
---fd-increase      How often to log the file descripters, default per 100 increases
+--mmap-increase    How often to log the memory mapped files, default per 5000
+                   increases
 """.strip()
 PAGE_SIZE=4096
 GB_SIZE=1024*1024*1024
 SHELL = '/bin/bash'
-DEVNULL = open(os.devnull, 'w')
 LOG_INTERVAL = 5 # sec
 DBCHK_INTERVAL = 1800 # sec
 MMAP_INCREASE = 5000
@@ -36,87 +40,139 @@ FD_INCREASE = 100
 def mynow():
     return datetime.now().astimezone().replace(microsecond=0).isoformat()
 
-def get_db_info(dbname):
-    cmd = "ps auxwww | grep [m]server5 | grep [d]bpath"
+def get_db_info(dbname, dbpath):
+    res_name = None
+    res_path = None
+    res_pid  = None
+
+    cmd = "ps aux | grep [m]server5 "
+    if dbpath:
+        cmd = cmd + "| grep \"" + dbpath + "\""
+        dbname = os.path.basename(dbpath) 
+    elif dbname:
+        cmd = cmd + "| grep " + dbname
+
+    res = None
+    try:
+        res = subprocess.run(cmd, shell=True, check=True, executable=SHELL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding='ascii')
+    except Exception as err:
+        exit_on_error("get_db_info(): failed to execute '{cmd}': {err}".format(cmd=cmd, err=str(err)))
+
+    if res.stdout.count("mserver5") > 1:
+        exit_on_error("get_db_info(): more than 1 running mserver5 process found. Please use \"--dbname\" or \"--dbpath\" to pick one:\n{info}".format(info=res.stdout))
+
+    ress = res.stdout.split()
+
+    # a minimal attempt to check that the 2nd field contains a possible PID
+    try:
+        res_pid = int(ress[1])
+    except Exception as err:
+        print(str(err))
+        exit_on_error("get_db_info(): unexpected output of the 'ps' command: expected the 2nd field to contain the PID, got " + res_pid)
+
+    for s in res.stdout.split():
+        if "--dbpath=" == s[0:9]:
+            res_path = s[9:]
+            res_name = os.path.basename(res_path) 
+
+            # This should never happen, but just some sanity check
+            if dbname and res_name != dbname:
+                exit_on_error("get_db_info(): expected dbname {nm1}, found {nm2}".format(nm1=dbname, nm2=res_name))
+            if dbpath and res_path != dbpath:
+                exit_on_error("get_db_info(): expected dbpath {pth1}, found {pth2}".format(pth1=dbpath, pth2=res_path))
+
+            return res_name, res_path, res_pid
+
     if dbname:
-        cmd = cmd + " | grep " + dbname
-
-    res = subprocess.run(cmd, shell=True, check=True, executable=SHELL, stdout=subprocess.PIPE, stderr=DEVNULL, encoding='ascii')
-    if res.returncode == 0:
-        if res.stdout.count("--dbpath") > 1:
-            exit_on_error("get_db_info(): more than 1 running database found in process info.: {info}".format(info=res.stdout))
-
-        for s in res.stdout.split():
-            if "--dbpath=" == s[0:9]:
-                return s[9:]
-
-        exit_on_error("!get_db_info(): could not find database")
+        exit_on_error("get_db_info(): could not find database '{db}' from process info:\n{info}".format(db=dbname, info=res.stdout))
     else:
-        exit_on_error("!get_db_info(): failed to execute: {cmd}".format(cmd=cmd))
-    return None, None #this should never be reached
+        exit_on_error("get_db_info(): could not find mserver5 from process info:\n{info}".format(info=res.stdout))
+
+    return res_name, res_path, res_pid
 
 def do_log(cmd, log, tee = True):
-    ROUND = 2
-    #print("[{now}] DEBUG!do_log(): execute command {cmd}".format(now=mynow(), cmd=cmd))
-    res = subprocess.run(cmd, shell=True, check=True, executable=SHELL, stdout=subprocess.PIPE, stderr=DEVNULL, encoding='ascii')
-    #print("[{now}] DEBUG!do_log(): res {res}".format(now=mynow(), res=res.stdout))
-    if res.returncode == 0:
-        if "statm" in cmd:
-            # convert the disk, mem and vm sizes to GB
-            vals= res.stdout.split()
-            logres = "{now} {dbsz} {rss} {vmsz} {maps} {fds}".format(
-                    now=vals[0], 
-                    dbsz=round(int(vals[1])/GB_SIZE,ROUND), 
-                    rss=round(int(vals[2])*PAGE_SIZE/GB_SIZE,ROUND), 
-                    vmsz=round(int(vals[3])*PAGE_SIZE/GB_SIZE,ROUND), 
-                    maps=vals[4], 
-                    fds=vals[5])
-        else:
-            logres = res.stdout
+    print("[{now}] DEBUG!do_log(): execute: '{cmd}'".format(now=mynow(), cmd=cmd))
 
-        if tee:
-            print(logres)
-        log.write(logres)
-        return logres
-    else:
-        log.write("[{now}] ERROR!Failed to execute: {cmd}".format(now=mynow(), cmd=cmd))
+    res = None
+    try:
+        res = subprocess.run(cmd, shell=True, check=True, executable=SHELL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                encoding='ascii')
+    except Exception as err:
+        log.write("[{now}] ERROR!Failed to execute: {cmd}: {err}".format(now=mynow(), cmd=cmd, err=str(err)))
         return None
+
+    print("[{now}] DEBUG!do_log(): ==> '{res}'".format(now=mynow(), res=res.stdout))
+    if "statm" in cmd:
+        # convert the disk, mem and vm sizes to GB
+        vals= res.stdout.split()
+        logres = "{now} {dbsz} {rss} {vmsz} {maps} {fds}".format(
+                now=vals[0],
+                dbsz=round(int(vals[1])/GB_SIZE, 2),
+                rss=round(int(vals[2])*PAGE_SIZE/GB_SIZE, 2),
+                vmsz=round(int(vals[3])*PAGE_SIZE/GB_SIZE, 2),
+                maps=vals[4],
+                fds=vals[5])
+    else:
+        logres = res.stdout
+
+    if tee:
+        print(logres)
+    log.write(logres)
+    return logres
 
 def do_db_check(dbname, logfile):
     with open(logfile+".dbchk", 'a') as dbchklog:
-        # FIXME: use only one query on sys.storage()
-        # Get the list of all tables not in a system scheme
-        # result is in the format: <schema>,<table>\n
-        cmd = "mclient -d {dbname} -fcsv -s 'select s.name, t.name from schemas s, tables t where t.system = false and s.id = t.schema_id order by s.name, t.name'".format(dbname=dbname)
-        res = subprocess.run(cmd, shell=True, check=True, executable=SHELL, stdout=subprocess.PIPE, stderr=DEVNULL, encoding='ascii')
-        if not res.returncode == 0:
-            msg = "[{now}] ERROR!Failed to execute: {cmd}".format(now=mynow(), cmd=cmd)
+        # Get the count of all tables not in a system scheme
+        # result is in the format: <schema>,<table>,<cnt>\n
+        cmd = "mclient -d {dbname} -fcsv -s '" \
+        "select s.schema, s.table, avg(count) as cnt " \
+        "from sys.storage() s, " \
+        "    (select s.name as schema, t.name as table " \
+        "     from schemas s, tables t " \
+        "     where t.system = false and s.id = t.schema_id) t " \
+        "where s.schema = t.schema and s.table = t.table " \
+        "group by s.schema, s.table;'".format(dbname=dbname)
+
+        res = None
+        try:
+            res = subprocess.run(cmd, shell=True, check=True, executable=SHELL,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    encoding='ascii')
+        except Exception as err:
+            msg = "[{now}] ERROR!Failed to execute: {cmd}: {err}".format(now=mynow(), cmd=cmd, err=str(err))
             print(msg); dbchklog.write(msg)
             return None
+
         msg = "[{now}] {cmd} ==> found {cnt} non-system tables".format(now=mynow(), cmd=cmd, cnt=res.stdout.count("\n"))
         print(msg); dbchklog.write(msg)
 
-        # for each user table, we do a SELECT COUNT(*)
+        # for each user table, we print its count
         for s in res.stdout.split('\n'):
             if not s:
                 continue
-            s = s.replace(",", ".")
-            cmd2 = "mclient -d {dbname} -fcsv -s 'select count(*) from {tbl}'".format(dbname=dbname, tbl=s)
-            res2 = subprocess.run(cmd2, shell=True, check=True, executable=SHELL, stdout=subprocess.PIPE, stderr=DEVNULL, encoding='ascii')
-            if res2.returncode == 0:
-                msg = "[{now}] {cmd} ==> {cnt}".format(now=mynow(), cmd=cmd2, cnt=res2.stdout)
-            else:
-                msg = "[{now}] ERROR!Failed to execute: {cmd}".format(now=mynow(), cmd=cmd2)
+            s = s.split(",")
+            msg = "[{now}] COUNT(*) FROM {schema}.{tbl} ==> {cnt}".format(now=mynow(), schema=s[0], tbl=s[1], cnt=s[2])
             print(msg); dbchklog.write(msg)
 
-
-def monitor(dbpath, logfile):
+def monitor(dbname, dbpath, dbpid, logfile):
     # FIXME: get the correct mserver5 process, in case there are more than one
 
-    # bash command that gives: date in sec in ISO 8601 format; disksize in bytes; RSS in #pages; VM in #pages; #mmapped files; #fd
-    statsCommand = """
-    echo  $(date -Iseconds) $(du -bs {db_path} | cut -f1) $(cat /proc/$(pgrep mserver5)/statm | cut -d ' ' -f2) $(cat /proc/$(pgrep mserver5)/statm | cut -d ' ' -f1) $(cat /proc/$(pgrep mserver5)/maps | wc -l) $(ls -al  /proc/$(pgrep mserver5)/fd | wc -l) ;
-    """.format(db_path=dbpath)
+    # bash command that gives:
+    #   date in sec in ISO 8601 format;
+    #   disksize in bytes;
+    #   RSS in #pages;
+    #   VM in #pages;
+    #   number of mmapped files;
+    #   number of FDs
+    statsCommand = "echo " \
+    "$(date -Iseconds) " \
+    "$(du -bs {db_path} | cut -f1) " \
+    "$(cat /proc/{db_pid}/statm | cut -d ' ' -f2) " \
+    "$(cat /proc/{db_pid}/statm | cut -d ' ' -f1) " \
+    "$(cat /proc/{db_pid}/maps | wc -l) " \
+    "$(ls -al  /proc/{db_pid}/fd | wc -l) ;".format(db_path=dbpath, db_pid=dbpid)
 
     next_maps = MMAP_INCREASE
     next_fds = FD_INCREASE
@@ -138,7 +194,7 @@ def monitor(dbpath, logfile):
             maps = int(stats[4])
             if maps > next_maps or maps > 65525:
                 with open(logfile+".maps", 'a') as maplog:
-                    mapcmd = "cat /proc/$(pgrep mserver5)/maps"
+                    mapcmd = "cat /proc/{dbpid}/maps".format(dbpid=dbpid)
                     msg = "[{now}] {cmd}\n".format(now=mynow(), cmd=mapcmd)
                     print(msg); maplog.write(msg)
                     do_log(mapcmd, maplog, False)
@@ -149,7 +205,7 @@ def monitor(dbpath, logfile):
             fd = int(stats[5])
             if fd > next_fds or fd > 1022:
                 with open(logfile+".fds", 'a') as fdlog:
-                    fdcmd = "ls -al /proc/$(pgrep mserver5)/fd"
+                    fdcmd = "ls -al /proc/dbpid/fd".format(dbpid=dbpid)
                     msg = "[{now}] {cmd}\n".format(now=mynow(), cmd=fdcmd)
                     print(msg); fdlog.write(msg)
                     do_log(fdcmd, fdlog, False)
@@ -164,52 +220,78 @@ def monitor(dbpath, logfile):
             time.sleep(LOG_INTERVAL)
 
 def exit_on_error(err):
-    print("ERROR!",err); print(USAGE)
+    print("ERROR!",err)
+    print(USAGE)
     sys.exit(2)
 
 def main(argv):
     logfile = ""
     dbname = None
     dbpath = None
+    dbpid  = None
 
+    # TODO: maybe a better way to parse the commandline options, e.g. to have
+    # option help messages and the option parser in one place
     try:
-        opts, args = getopt.getopt(argv, "", ["help", "dbname=", "logbase=", "log-interval=", "dbcheck-interval=", "mmap-increase=", "fd-increase=", "dbpath="])
+        opts, args = getopt.getopt(argv, "", [
+            "help",
+            "dbcheck-interval=",
+            "dbname=",
+            "dbpath=",
+            "dbpid=",
+            "fd-increase=",
+            "logbase=",
+            "log-interval=",
+            "mmap-increase="
+            ])
     except getopt.GetoptError as err:
         exit_on_error(str(err))
+
     for opt, arg in opts:
         if opt == "--help":
             print(USAGE)
             sys.exit(0)
+        elif opt == "--dbcheck-interval":
+            global DBCHK_INTERVAL
+            DBCHK_INTERVAL = int(arg)
         elif opt == "--dbname":
             dbname = arg
         elif opt == "--dbpath":
             dbpath = arg
+        elif opt == "--fd-increase":
+            global FD_INCREASE
+            FD_INCREASE = int(arg)
         elif opt == "--logbase":
             logfile = arg
         elif opt == "--log-interval":
             global LOG_INTERVAL
             LOG_INTERVAL = int(arg)
-        elif opt == "--dbcheck-interval":
-            global DBCHK_INTERVAL
-            DBCHK_INTERVAL = int(arg)
         elif opt == "--mmap-increase":
             global MMAP_INCREASE
             MMAP_INCREASE = int(arg)
-        elif opt == "--fd-increase":
-            global FD_INCREASE
-            FD_INCREASE = int(arg)
-    if not(dbpath):
-        dbpath = get_db_info(dbname)
-    dbname = os.path.basename(dbpath)
+
+    if (dbname and dbpath) and (dbname != os.path.basename(dbpath)):
+        exit_on_error("\--dbname\" and \--dbpath\" contain different database names")
+
+    dbname, dbpath, dbpid = get_db_info(dbname, dbpath)
+
+
+    try:
+        subprocess.run("which mclient", shell=True, check=True,
+                executable=SHELL)
+    except Exception as err:
+        print("ERROR!Could not find 'mclient' in $PATH")
+        sys.exit(2)
+
     if os.path.isdir(logfile):
         os.path.join(logfile, dbname+".log")
     else:
         logfile = logfile + "_" + dbname + ".log"
 
-    print("[{now}] DEBUG!main():monitoring {dbpath}".format(now=mynow(), dbpath=dbpath))
-    print("[{now}] DEBUG!main():log files: {log}, {log}.maps, {log}.fds, {log}.dbchk\n".format(now=mynow(), log=logfile))
+    print("[{now}] DEBUG!main(): monitoring {dbpath}".format(now=mynow(), dbpath=dbpath))
+    print("[{now}] DEBUG!main(): log files: {log}, {log}.maps, {log}.fds, {log}.dbchk\n".format(now=mynow(), log=logfile))
 
-    monitor(dbpath, logfile)
+    monitor(dbname, dbpath, dbpid, logfile)
 
 
 if __name__ == "__main__":
