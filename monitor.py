@@ -100,34 +100,41 @@ def do_log(cmd, log, tee = True):
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 encoding='ascii')
     except Exception as err:
-        log.write("[{now}] ERROR!Failed to execute: {cmd}: {err}".format(now=mynow(), cmd=cmd, err=str(err)))
+        log.write("[{now}] ERROR!Failed to execute: {cmd}: {err}\n".format(now=mynow(), cmd=cmd, err=str(err)))
         return None
 
-    print("[{now}] DEBUG!do_log(): ==> '{res}'".format(now=mynow(), res=res.stdout))
+    print("[{now}] DEBUG!do_log():==>\n{out}<==".format(now=mynow(), out=res.stdout))
     if "statm" in cmd:
-        # convert the disk, mem and vm sizes to GB
         vals= res.stdout.split()
-        logres = "{now} {dbsz} {rss} {vmsz} {maps} {fds}".format(
+        # subcommands of 'cmd' can contain error messages which cause the value
+        # conversions to fail
+        try:
+            # convert the disk, mem and vm sizes to GB
+            logres = "{now} {dbsz} {rss} {vmsz} {maps} {fds}".format(
                 now=vals[0],
                 dbsz=round(int(vals[1])/GB_SIZE, 2),
                 rss=round(int(vals[2])*PAGE_SIZE/GB_SIZE, 2),
                 vmsz=round(int(vals[3])*PAGE_SIZE/GB_SIZE, 2),
                 maps=vals[4],
                 fds=vals[5])
+        except Exception as err:
+            log.write("[{now}] ERROR!Failed to execute: {cmd}=>{out}<=|=>{err}<=\n".format(now=mynow(), cmd=cmd, out=str(res.stdout), err=str(res.stderr)))
+            return None
     else:
         logres = res.stdout
 
     if tee:
         print(logres)
-    log.write(logres)
+    log.write(logres + "\n")
     return logres
 
 def do_db_check(dbname, logfile):
     with open(logfile+".dbchk", 'a') as dbchklog:
         # Get the count of all tables not in a system scheme
-        # result is in the format: <schema>,<table>,<cnt>\n
+        # result is in the format: <schema>,<table>,<cnt>,<cnt_ok>\n
         cmd = "mclient -d {dbname} -fcsv -s '" \
-        "select s.schema, s.table, avg(count) as cnt " \
+        "select s.schema, s.table, min(count) as cnt, " \
+        "       min(count) = max(count) as cnt_ok " \
         "from sys.storage() s, " \
         "    (select s.name as schema, t.name as table " \
         "     from schemas s, tables t " \
@@ -142,19 +149,26 @@ def do_db_check(dbname, logfile):
                     encoding='ascii')
         except Exception as err:
             msg = "[{now}] ERROR!Failed to execute: {cmd}: {err}".format(now=mynow(), cmd=cmd, err=str(err))
-            print(msg); dbchklog.write(msg)
+            print(msg); dbchklog.write(msg + "\n")
             return None
 
         msg = "[{now}] {cmd} ==> found {cnt} non-system tables".format(now=mynow(), cmd=cmd, cnt=res.stdout.count("\n"))
-        print(msg); dbchklog.write(msg)
+        print(msg); dbchklog.write(msg + "\n")
 
         # for each user table, we print its count
         for s in res.stdout.split('\n'):
+            # check for end of the CSV
             if not s:
                 continue
-            s = s.split(",")
-            msg = "[{now}] COUNT(*) FROM {schema}.{tbl} ==> {cnt}".format(now=mynow(), schema=s[0], tbl=s[1], cnt=s[2])
-            print(msg); dbchklog.write(msg)
+
+            ss = s.split(",")
+            if len(ss) != 4:
+                msg = "[{now}] ERROR!unexpected result for DB table count: {res}".format()
+                print(msg); dbchklog.write(msg + "\n")
+                return
+
+            msg = "[{now}] COUNT(*) FROM {schema}.{tbl} ==> {cnt} (ok = {ok})".format(now=mynow(), schema=ss[0], tbl=ss[1], cnt=ss[2], ok=ss[3])
+            print(msg); dbchklog.write(msg + "\n")
 
 def monitor(dbname, dbpath, dbpid, logfile):
     # FIXME: get the correct mserver5 process, in case there are more than one
@@ -196,7 +210,7 @@ def monitor(dbname, dbpath, dbpid, logfile):
                 with open(logfile+".maps", 'a') as maplog:
                     mapcmd = "cat /proc/{dbpid}/maps".format(dbpid=dbpid)
                     msg = "[{now}] {cmd}\n".format(now=mynow(), cmd=mapcmd)
-                    print(msg); maplog.write(msg)
+                    print(msg); maplog.write(msg + "\n")
                     do_log(mapcmd, maplog, False)
                 next_maps += MMAP_INCREASE
 
@@ -207,7 +221,7 @@ def monitor(dbname, dbpath, dbpid, logfile):
                 with open(logfile+".fds", 'a') as fdlog:
                     fdcmd = "ls -al /proc/dbpid/fd".format(dbpid=dbpid)
                     msg = "[{now}] {cmd}\n".format(now=mynow(), cmd=fdcmd)
-                    print(msg); fdlog.write(msg)
+                    print(msg); fdlog.write(msg + "\n")
                     do_log(fdcmd, fdlog, False)
                 next_fds += FD_INCREASE
 
