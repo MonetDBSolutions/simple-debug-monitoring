@@ -197,6 +197,7 @@ def monitor(dbname, dbpath, dbpid, logfile):
 
             # log the resource consumption info.
             res = do_log(statsCommand, log)
+            log.flush()
             if res == None:
                 continue;
 
