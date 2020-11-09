@@ -3,6 +3,7 @@
 import argparse
 from datetime import datetime
 import getopt
+import glob
 import os
 import sys
 import subprocess
@@ -18,24 +19,29 @@ Monitors resource usage of one running MonetDB database:
 
 usage: ./monitor.py [options]
 
---help             Print this help screen
---dbcheck-interval Interval in seconds to check database tables, default 1800
---dbname           Name of the database to monitor
---dbpath           Path of the database to monitor
---fd-increase      How often to log the file descripters, default per 100
-                   increases
---logbase          Extra base filename or path for the log file "<dbname>.log"
---log-interval     Log interval in seconds, default 5
---mmap-increase    How often to log the memory mapped files, default per 5000
-                   increases
+--help                 Print this help screen.
+--dbcheck-interval     Interval in seconds to check the data in the database,
+                       default 3600.
+--dbfarmcheck-interval Interval in seconds to check the files in the database,
+                       default 3600.
+--dbname               Name of the database to monitor.
+--dbpath               Path of the database to monitor.
+--fd-increase          How often to log the file descripters, default per 100
+                       increases.
+--logbase              Extra base filename or path for the log files,
+                       default <dbname>.
+--log-interval         Log interval in seconds, default 5
+--mmap-increase        How often to log the memory mapped files, default per
+                       5000 increases
+--verbose              Log more details. Each log action implements its own.
 """.strip()
-PAGE_SIZE=4096
-GB_SIZE=1024*1024*1024
 SHELL = '/bin/bash'
-LOG_INTERVAL = 5 # sec
-DBCHK_INTERVAL = 1800 # sec
-MMAP_INCREASE = 5000
+DBCHK_INTERVAL = 3600 # sec
+DBFARMCHK_INTERVAL = 3600 # sec
 FD_INCREASE = 100
+LOG_INTERVAL = 5 # sec
+MMAP_INCREASE = 5000
+VERBOSE = False
 
 def mynow():
     return datetime.now().astimezone().replace(microsecond=0).isoformat()
@@ -92,6 +98,9 @@ def get_db_info(dbname, dbpath):
     return res_name, res_path, res_pid
 
 def do_log(cmd, log, tee = True):
+    PAGE_SIZE=4096
+    GB_SIZE=1024*1024*1024
+
     print("[{now}] DEBUG!do_log(): execute: '{cmd}'".format(now=mynow(), cmd=cmd))
 
     res = None
@@ -128,8 +137,12 @@ def do_log(cmd, log, tee = True):
     log.write(logres + "\n")
     return logres
 
+# Check the data in the database.
+# Currently, run a count(*) on all user tables
 def do_db_check(dbname, logfile):
-    with open(logfile+".dbchk", 'a') as dbchklog:
+    #FIXME: use pymonetdb
+
+    with open(logfile, 'a') as dbchklog:
         # Get the count of all tables not in a system scheme
         # result is in the format: <schema>,<table>,<cnt>,<cnt_ok>\n
         cmd = "mclient -d {dbname} -fcsv -s '" \
@@ -170,8 +183,37 @@ def do_db_check(dbname, logfile):
             msg = "[{now}] COUNT(*) FROM {schema}.{tbl} ==> {cnt} (ok = {ok})".format(now=mynow(), schema=ss[0], tbl=ss[1], cnt=ss[2], ok=ss[3])
             print(msg); dbchklog.write(msg + "\n")
 
-def monitor(dbname, dbpath, dbpid, logfile):
-    # FIXME: get the correct mserver5 process, in case there are more than one
+# Check the files in the dbfarm.
+# Current, count the files with these extensions:
+# .tail, .theap, .thashl, .thashb, .thsh*, .timprints, .torderidx
+def do_dbfarm_check(dbpath, logfile):
+    # FIXME: Might need to change the implementation here, since using the “**”
+    #        pattern in large directory trees may cause performance problems.
+    exts = (
+            "tail",
+            "theap",
+            "thashl",
+            "thashb",
+            "thsh*",
+            "timprints",
+            "torderidx",
+            "total") # always end with "total"
+    msg = "[{now}] ".format(now=mynow())
+    for f in exts:
+        if f != 'total':
+            cnt = len(glob.glob(dbpath+'/**/*.'+f, recursive=True))
+        else:
+            cnt = len(glob.glob(dbpath+'/**', recursive=True))
+        msg += "{name}:{cnt} ".format(name=f, cnt=cnt)
+
+    with open(logfile, 'a') as dbfarm_chklog:
+        print(msg); dbfarm_chklog.write(msg + "\n")
+
+def monitor(dbname, dbpath, dbpid, logbase):
+    # FIXME: replace as many as possible the SHELL commands with Python
+    #        functions
+
+    # TODO: put every log in a subthread/subprocess
 
     # bash command that gives:
     #   date in sec in ISO 8601 format;
@@ -188,11 +230,13 @@ def monitor(dbname, dbpath, dbpid, logfile):
     "$(cat /proc/{db_pid}/maps | wc -l) " \
     "$(ls -al  /proc/{db_pid}/fd | wc -l) ;".format(db_path=dbpath, db_pid=dbpid)
 
+    # only log these values if their counts are high enough
     next_maps = MMAP_INCREASE
     next_fds = FD_INCREASE
-    next_dbchk = int(time.time()) + DBCHK_INTERVAL
+    # let's do these checks immediately
+    next_dbchk = next_dbfarmchk = int(time.time()) - 1
 
-    with open(logfile, 'a') as log:
+    with open(logbase+".log", 'a') as log:
         while True:
 
             # log the resource consumption info.
@@ -208,7 +252,7 @@ def monitor(dbname, dbpath, dbpid, logfile):
             # log the mmaps every 5000 or just before hitting the limit
             maps = int(stats[4])
             if maps > next_maps or maps > 65525:
-                with open(logfile+".maps", 'a') as maplog:
+                with open(logbase+"_maps.log", 'a') as maplog:
                     mapcmd = "cat /proc/{dbpid}/maps".format(dbpid=dbpid)
                     msg = "[{now}] {cmd}\n".format(now=mynow(), cmd=mapcmd)
                     print(msg); maplog.write(msg + "\n")
@@ -219,18 +263,21 @@ def monitor(dbname, dbpath, dbpid, logfile):
             # log the fds every 100 or just before hitting the limit
             fd = int(stats[5])
             if fd > next_fds or fd > 1022:
-                with open(logfile+".fds", 'a') as fdlog:
+                with open(logbase+"_fds.log", 'a') as fdlog:
                     fdcmd = "ls -al /proc/dbpid/fd".format(dbpid=dbpid)
                     msg = "[{now}] {cmd}\n".format(now=mynow(), cmd=fdcmd)
                     print(msg); fdlog.write(msg + "\n")
                     do_log(fdcmd, fdlog, False)
                 next_fds += FD_INCREASE
 
-            # Once in a long while, do a simple check of the database
-            # Currently, count() on all user tables
+            # Once in a long while, check the data in the database and the
+            # files in the dbfarm
             if int(time.time()) > next_dbchk:
-                do_db_check(os.path.basename(dbpath), logfile)
+                do_db_check(os.path.basename(dbpath), logbase+"_dbchk.log")
                 next_dbchk += DBCHK_INTERVAL
+            if int(time.time()) > next_dbfarmchk:
+                do_dbfarm_check(dbpath, logbase+"_dbfarmchk.log")
+                next_dbfarmchk += DBFARMCHK_INTERVAL
 
             time.sleep(LOG_INTERVAL)
 
@@ -240,7 +287,7 @@ def exit_on_error(err):
     sys.exit(2)
 
 def main(argv):
-    logfile = ""
+    logbase = ""
     dbname = None
     dbpath = None
     dbpid  = None
@@ -251,13 +298,15 @@ def main(argv):
         opts, args = getopt.getopt(argv, "", [
             "help",
             "dbcheck-interval=",
+            "dbfarmcheck-interval=",
             "dbname=",
             "dbpath=",
             "dbpid=",
             "fd-increase=",
             "logbase=",
             "log-interval=",
-            "mmap-increase="
+            "mmap-increase=",
+            "verbose="
             ])
     except getopt.GetoptError as err:
         exit_on_error(str(err))
@@ -269,6 +318,9 @@ def main(argv):
         elif opt == "--dbcheck-interval":
             global DBCHK_INTERVAL
             DBCHK_INTERVAL = int(arg)
+        elif opt == "--dbfarmcheck-interval":
+            global DBFARMCHK_INTERVAL
+            DBFARMCHK_INTERVAL = int(arg)
         elif opt == "--dbname":
             dbname = arg
         elif opt == "--dbpath":
@@ -277,13 +329,16 @@ def main(argv):
             global FD_INCREASE
             FD_INCREASE = int(arg)
         elif opt == "--logbase":
-            logfile = arg
+            logbase = arg
         elif opt == "--log-interval":
             global LOG_INTERVAL
             LOG_INTERVAL = int(arg)
         elif opt == "--mmap-increase":
             global MMAP_INCREASE
             MMAP_INCREASE = int(arg)
+        elif opt == "--verbose":
+            global VERBOSE
+            VERBOSE = True
 
     if (dbname and dbpath) and (dbname != os.path.basename(dbpath)):
         exit_on_error("\--dbname\" and \--dbpath\" contain different database names")
@@ -298,15 +353,20 @@ def main(argv):
         print("ERROR!Could not find 'mclient' in $PATH")
         sys.exit(2)
 
-    if os.path.isdir(logfile):
-        os.path.join(logfile, dbname+".log")
+    if os.path.isdir(logbase):
+        os.path.join(logbase, dbname)
     else:
-        logfile = logfile + "_" + dbname + ".log"
+        logbase = logbase + "_" + dbname
 
     print("[{now}] DEBUG!main(): monitoring {dbpath}".format(now=mynow(), dbpath=dbpath))
-    print("[{now}] DEBUG!main(): log files: {log}, {log}.maps, {log}.fds, {log}.dbchk\n".format(now=mynow(), log=logfile))
+    print("[{now}] DEBUG!main(): log files: " \
+            "{log}.log, " \
+            "{log}_fds.log, " \
+            "{log}_dbchk.log, " \
+            "{log}_files.log, " \
+            "{log}_maps.log\n".format(now=mynow(), log=logbase))
 
-    monitor(dbname, dbpath, dbpid, logfile)
+    monitor(dbname, dbpath, dbpid, logbase)
 
 
 if __name__ == "__main__":
